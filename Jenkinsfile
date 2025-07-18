@@ -1,7 +1,7 @@
 pipeline {
   agent any
   tools {
-    nodejs 'MyNodeJS'
+    nodejs 'MyNodeJS' // Make sure this matches your Jenkins NodeJS tool name
   }
   environment {
     AWS_REGION = 'us-east-1'
@@ -9,8 +9,15 @@ pipeline {
     ECR_REPO_FRONTEND = 'tfp-eks-frontend'
     ECR_REPO_BACKEND = 'tfp-eks-backend'
     KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-credentials-id'
+    // NODE_OPTIONS is not needed for Node 16, but add if you use Node 17+
+    // NODE_OPTIONS = '--openssl-legacy-provider'
   }
   stages {
+    stage('Checkout') {
+      steps {
+        checkout scm
+      }
+    }
     stage('Build & Test Frontend') {
       steps {
         dir('frontend') {
@@ -29,17 +36,17 @@ pipeline {
       }
     }
     stage('Docker Build & Push') {
-      when {
-        branch 'main'
-      }
       steps {
         script {
+          // Login to ECR
           sh 'aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY'
+          // Build and push frontend
           dir('frontend') {
             sh "docker build -t $ECR_REPO_FRONTEND:latest ."
             sh "docker tag $ECR_REPO_FRONTEND:latest $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest"
             sh "docker push $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest"
           }
+          // Build and push backend
           dir('backend') {
             sh "docker build -t $ECR_REPO_BACKEND:latest ."
             sh "docker tag $ECR_REPO_BACKEND:latest $ECR_REGISTRY/$ECR_REPO_BACKEND:latest"
@@ -49,9 +56,6 @@ pipeline {
       }
     }
     stage('Deploy to EKS') {
-      when {
-        branch 'main'
-      }
       steps {
         withCredentials([file(credentialsId: env.KUBECONFIG_CREDENTIALS_ID, variable: 'KUBECONFIG')]) {
           sh 'kubectl apply -f k8s_manifests/ --recursive --namespace=app'

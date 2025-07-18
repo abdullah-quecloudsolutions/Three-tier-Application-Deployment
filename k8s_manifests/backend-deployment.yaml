@@ -39,17 +39,17 @@ spec:
                 name: mongo-sec
                 key: password
         ports:
-        - containerPort: 5000
+        - containerPort: 6000
         livenessProbe:
           httpGet:
             path: /ok
-            port: 5000
+            port: 6000
           initialDelaySeconds: 2
           periodSeconds: 5
         readinessProbe:
           httpGet:
              path: /ok
-             port: 5000
+             port: 6000
           initialDelaySeconds: 5
           periodSeconds: 5
           successThreshold: 1

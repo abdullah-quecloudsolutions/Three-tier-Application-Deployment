@@ -10,6 +10,5 @@ COPY db.js .
 COPY models/ ./models/
 COPY routes/ ./routes/
 
-EXPOSE 5000
-
+EXPOSE 6000
 CMD ["node", "index.js"]
