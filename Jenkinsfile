@@ -7,24 +7,57 @@ pipeline {
   environment {
     AWS_REGION = 'us-east-1'
     ECR_REGISTRY = '932757390465.dkr.ecr.us-east-1.amazonaws.com'
-    ECR_REPO = 'tfp-eks'
+    ECR_REPO_FRONTEND = 'tfp-eks-frontend'
+    ECR_REPO_BACKEND = 'tfp-eks-backend'
     KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-credentials-id'
   }
   stages {
-    stage('Build Docker Image') {
+    stage('Checkout') {
       steps {
-        script {
-          sh "docker build -t $ECR_REPO:latest ."
+        checkout scm
+      }
+    }
+    stage('Build & Test Frontend') {
+      steps {
+        dir('frontend') {
+          sh 'npm install'
+          sh 'npm run build'
+          sh 'npm test || true'
         }
       }
     }
-    stage('Push to ECR') {
+    stage('Build & Test Backend') {
+      steps {
+        dir('backend') {
+          sh 'npm install'
+          sh 'npm test || true'
+        }
+      }
+    }
+    stage('Docker Build & Push Frontend') {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-credentials']]) {
           script {
-            sh "aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY"
-            sh "docker tag $ECR_REPO:latest $ECR_REGISTRY/$ECR_REPO:latest"
-            sh "docker push $ECR_REGISTRY/$ECR_REPO:latest"
+            dir('frontend') {
+              sh 'aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY'
+              sh "docker build -t $ECR_REPO_FRONTEND:latest ."
+              sh "docker tag $ECR_REPO_FRONTEND:latest $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest"
+              sh "docker push $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest"
+            }
+          }
+        }
+      }
+    }
+    stage('Docker Build & Push Backend') {
+      steps {
+        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-credentials']]) {
+          script {
+            dir('backend') {
+              sh 'aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY'
+              sh "docker build -t $ECR_REPO_BACKEND:latest ."
+              sh "docker tag $ECR_REPO_BACKEND:latest $ECR_REGISTRY/$ECR_REPO_BACKEND:latest"
+              sh "docker push $ECR_REGISTRY/$ECR_REPO_BACKEND:latest"
+            }
           }
         }
       }
