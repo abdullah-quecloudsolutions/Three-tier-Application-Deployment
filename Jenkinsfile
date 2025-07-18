@@ -2,7 +2,7 @@ pipeline {
   agent any
   tools {
     nodejs 'MyNodeJS'
-    dockerTool 'MyDocker'
+    // Remove dockerTool as it's causing issues - we'll use Docker from the agent
   }
   environment {
     AWS_ACCESS_KEY_ID = credentials('AWS_ACCESS_KEY_ID')
@@ -24,7 +24,7 @@ pipeline {
         dir('frontend') {
           sh 'npm install'
           sh 'npm run build'
-          sh 'npm test || true'
+          sh 'npm test -- --passWithNoTests || true'
         }
       }
     }
@@ -41,7 +41,12 @@ pipeline {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-credentials']]) {
           script {
             dir('frontend') {
-              sh 'aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY'
+              // Login to ECR
+              sh '''
+                aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+              '''
+              
+              // Build and push Docker image
               sh "docker build -t $ECR_REPO_FRONTEND:latest ."
               sh "docker tag $ECR_REPO_FRONTEND:latest $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest"
               sh "docker push $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest"
@@ -55,7 +60,12 @@ pipeline {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-credentials']]) {
           script {
             dir('backend') {
-              sh 'aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY'
+              // Login to ECR
+              sh '''
+                aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+              '''
+              
+              // Build and push Docker image
               sh "docker build -t $ECR_REPO_BACKEND:latest ."
               sh "docker tag $ECR_REPO_BACKEND:latest $ECR_REGISTRY/$ECR_REPO_BACKEND:latest"
               sh "docker push $ECR_REGISTRY/$ECR_REPO_BACKEND:latest"
@@ -70,6 +80,17 @@ pipeline {
           sh 'kubectl apply -f k8s_manifests/ --recursive --namespace=app'
         }
       }
+    }
+  }
+  post {
+    always {
+      // Clean up Docker images to save space
+      sh '''
+        docker rmi $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest || true
+        docker rmi $ECR_REGISTRY/$ECR_REPO_BACKEND:latest || true
+        docker rmi $ECR_REPO_FRONTEND:latest || true
+        docker rmi $ECR_REPO_BACKEND:latest || true
+      '''
     }
   }
 }
