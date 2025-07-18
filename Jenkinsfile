@@ -1,9 +1,11 @@
 pipeline {
-  agent any
-  tools {
-    nodejs 'MyNodeJS'
-    dockerTool 'MyDocker'
+  agent {
+    docker {
+      image 'node:16-alpine'
+      args '-v /var/run/docker.sock:/var/run/docker.sock'
+    }
   }
+  
   environment {
     AWS_ACCESS_KEY_ID = credentials('AWS_ACCESS_KEY_ID')
     AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
@@ -13,28 +15,38 @@ pipeline {
     ECR_REPO_BACKEND = 'tfp-eks-backend'
     KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-credentials-id'
   }
+  
   stages {
-    stage('Checkout') {
+    stage('Setup') {
       steps {
-        checkout scm
+        sh '''
+          # Install required tools
+          apk add --no-cache docker-cli curl unzip
+          
+          # Install AWS CLI
+          curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
+          unzip -q awscliv2.zip
+          ./aws/install
+          rm -rf awscliv2.zip aws/
+          
+          # Install kubectl
+          curl -LO "https://dl.k8s.io/release/$(curl -L -s https://dl.k8s.io/release/stable.txt)/bin/linux/amd64/kubectl"
+          chmod +x kubectl
+          mv kubectl /usr/local/bin/
+          
+          # Verify installations
+          node --version
+          npm --version
+          docker --version
+          aws --version
+          kubectl version --client
+        '''
       }
     }
     
-    stage('Install AWS CLI') {
+    stage('Checkout') {
       steps {
-        sh '''
-          # Check if AWS CLI is already installed
-          if ! command -v aws &> /dev/null; then
-            echo "Installing AWS CLI..."
-            curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
-            unzip -q awscliv2.zip
-            sudo ./aws/install
-            rm -rf awscliv2.zip aws/
-          else
-            echo "AWS CLI is already installed"
-          fi
-          aws --version
-        '''
+        checkout scm
       }
     }
     
@@ -74,10 +86,6 @@ pipeline {
               docker build -t $ECR_REPO_FRONTEND:latest .
               docker tag $ECR_REPO_FRONTEND:latest $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest
               docker push $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest
-              
-              # Clean up local images to save space
-              docker rmi $ECR_REPO_FRONTEND:latest || true
-              docker rmi $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest || true
             '''
           }
         }
@@ -101,10 +109,6 @@ pipeline {
               docker build -t $ECR_REPO_BACKEND:latest .
               docker tag $ECR_REPO_BACKEND:latest $ECR_REGISTRY/$ECR_REPO_BACKEND:latest
               docker push $ECR_REGISTRY/$ECR_REPO_BACKEND:latest
-              
-              # Clean up local images to save space
-              docker rmi $ECR_REPO_BACKEND:latest || true
-              docker rmi $ECR_REGISTRY/$ECR_REPO_BACKEND:latest || true
             '''
           }
         }
@@ -115,13 +119,7 @@ pipeline {
       steps {
         withCredentials([file(credentialsId: env.KUBECONFIG_CREDENTIALS_ID, variable: 'KUBECONFIG')]) {
           sh '''
-            # Verify kubectl is available
-            kubectl version --client
-            
-            # Apply Kubernetes manifests
             kubectl apply -f k8s_manifests/ --recursive --namespace=app
-            
-            # Wait for deployment to be ready
             kubectl wait --for=condition=available --timeout=300s deployment --all -n app
           '''
         }
@@ -131,7 +129,6 @@ pipeline {
   
   post {
     always {
-      // Clean up workspace
       cleanWs()
     }
     success {
