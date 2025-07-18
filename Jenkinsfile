@@ -54,7 +54,7 @@ pipeline {
       }
       steps {
         withCredentials([file(credentialsId: env.KUBECONFIG_CREDENTIALS_ID, variable: 'KUBECONFIG')]) {
-          sh 'kubectl apply -f k8s_manifests/ --namespace=app'
+          sh 'kubectl apply -f k8s_manifests/ --recursive --namespace=app'
         }
       }
     }
