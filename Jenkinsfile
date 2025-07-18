@@ -1,9 +1,10 @@
 pipeline {
-  agent any
-  tools {
-    nodejs 'MyNodeJS'
-    // Remove dockerTool as it's causing issues - we'll use Docker from the agent
+  agent {
+    kubernetes {
+      yamlFile 'jenkins-agent-pod-template.yaml'
+    }
   }
+  
   environment {
     AWS_ACCESS_KEY_ID = credentials('AWS_ACCESS_KEY_ID')
     AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_ACCESS_KEY')
@@ -13,84 +14,107 @@ pipeline {
     ECR_REPO_BACKEND = 'tfp-eks-backend'
     KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-credentials-id'
   }
+  
   stages {
     stage('Checkout') {
       steps {
         checkout scm
       }
     }
+    
     stage('Build & Test Frontend') {
       steps {
-        dir('frontend') {
-          sh 'npm install'
-          sh 'npm run build'
-          sh 'npm test -- --passWithNoTests || true'
+        container('jnlp') {
+          dir('frontend') {
+            sh 'npm install'
+            sh 'npm run build'
+            sh 'npm test || echo "Tests failed but continuing pipeline"'
+          }
         }
       }
     }
+    
     stage('Build & Test Backend') {
       steps {
-        dir('backend') {
-          sh 'npm install'
-          sh 'npm test || true'
+        container('jnlp') {
+          dir('backend') {
+            sh 'npm install'
+            sh 'npm test || echo "Tests failed but continuing pipeline"'
+          }
         }
       }
     }
+    
     stage('Docker Build & Push Frontend') {
       steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-credentials']]) {
-          script {
-            dir('frontend') {
-              // Login to ECR
-              sh '''
-                aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-              '''
-              
-              // Build and push Docker image
-              sh "docker build -t $ECR_REPO_FRONTEND:latest ."
-              sh "docker tag $ECR_REPO_FRONTEND:latest $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest"
-              sh "docker push $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest"
+        container('docker') {
+          container('aws-cli') {
+            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-credentials']]) {
+              dir('frontend') {
+                sh '''
+                  aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+                  docker build -t $ECR_REPO_FRONTEND:latest .
+                  docker tag $ECR_REPO_FRONTEND:latest $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest
+                  docker push $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest
+                '''
+              }
             }
           }
         }
       }
     }
+    
     stage('Docker Build & Push Backend') {
       steps {
-        withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-credentials']]) {
-          script {
-            dir('backend') {
-              // Login to ECR
-              sh '''
-                aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-              '''
-              
-              // Build and push Docker image
-              sh "docker build -t $ECR_REPO_BACKEND:latest ."
-              sh "docker tag $ECR_REPO_BACKEND:latest $ECR_REGISTRY/$ECR_REPO_BACKEND:latest"
-              sh "docker push $ECR_REGISTRY/$ECR_REPO_BACKEND:latest"
+        container('docker') {
+          container('aws-cli') {
+            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-credentials']]) {
+              dir('backend') {
+                sh '''
+                  aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
+                  docker build -t $ECR_REPO_BACKEND:latest .
+                  docker tag $ECR_REPO_BACKEND:latest $ECR_REGISTRY/$ECR_REPO_BACKEND:latest
+                  docker push $ECR_REGISTRY/$ECR_REPO_BACKEND:latest
+                '''
+              }
             }
           }
         }
       }
     }
+    
     stage('Deploy to EKS') {
       steps {
-        withCredentials([file(credentialsId: env.KUBECONFIG_CREDENTIALS_ID, variable: 'KUBECONFIG')]) {
-          sh 'kubectl apply -f k8s_manifests/ --recursive --namespace=app'
+        container('kubectl') {
+          withCredentials([file(credentialsId: env.KUBECONFIG_CREDENTIALS_ID, variable: 'KUBECONFIG')]) {
+            sh '''
+              kubectl apply -f k8s_manifests/ --recursive --namespace=app
+              kubectl wait --for=condition=available --timeout=300s deployment --all -n app || true
+              kubectl get deployments -n app
+              kubectl get pods -n app
+            '''
+          }
         }
       }
     }
   }
+  
   post {
     always {
-      // Clean up Docker images to save space
-      sh '''
-        docker rmi $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest || true
-        docker rmi $ECR_REGISTRY/$ECR_REPO_BACKEND:latest || true
-        docker rmi $ECR_REPO_FRONTEND:latest || true
-        docker rmi $ECR_REPO_BACKEND:latest || true
-      '''
+      container('docker') {
+        sh '''
+          docker rmi $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest || true
+          docker rmi $ECR_REGISTRY/$ECR_REPO_BACKEND:latest || true
+          docker rmi $ECR_REPO_FRONTEND:latest || true
+          docker rmi $ECR_REPO_BACKEND:latest || true
+        '''
+      }
+    }
+    success {
+      echo 'Pipeline completed successfully!'
+    }
+    failure {
+      echo 'Pipeline failed. Check the logs for details.'
     }
   }
 }
