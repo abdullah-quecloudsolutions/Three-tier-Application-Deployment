@@ -1,7 +1,7 @@
 pipeline {
   agent {
     kubernetes {
-      yamlFile 'jenkins-agent-pod-template.yaml'
+      yamlFile 'jenkins-dind-pod-template.yaml'
     }
   }
   
@@ -13,6 +13,7 @@ pipeline {
     ECR_REPO_FRONTEND = 'tfp-eks-frontend'
     ECR_REPO_BACKEND = 'tfp-eks-backend'
     KUBECONFIG_CREDENTIALS_ID = 'kubeconfig-credentials-id'
+    DOCKER_HOST = 'tcp://localhost:2375'
   }
   
   stages {
@@ -45,20 +46,27 @@ pipeline {
       }
     }
     
+    stage('ECR Login') {
+      steps {
+        container('aws-cli') {
+          sh '''
+            aws ecr get-login-password --region $AWS_REGION > /tmp/ecr_password
+            cat /tmp/ecr_password | docker login --username AWS --password-stdin $ECR_REGISTRY
+            rm -f /tmp/ecr_password
+          '''
+        }
+      }
+    }
+    
     stage('Docker Build & Push Frontend') {
       steps {
-        container('docker') {
-          container('aws-cli') {
-            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-credentials']]) {
-              dir('frontend') {
-                sh '''
-                  aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-                  docker build -t $ECR_REPO_FRONTEND:latest .
-                  docker tag $ECR_REPO_FRONTEND:latest $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest
-                  docker push $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest
-                '''
-              }
-            }
+        container('jnlp') {
+          dir('frontend') {
+            sh '''
+              docker build -t $ECR_REPO_FRONTEND:latest .
+              docker tag $ECR_REPO_FRONTEND:latest $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest
+              docker push $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest
+            '''
           }
         }
       }
@@ -66,18 +74,13 @@ pipeline {
     
     stage('Docker Build & Push Backend') {
       steps {
-        container('docker') {
-          container('aws-cli') {
-            withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-jenkins-credentials']]) {
-              dir('backend') {
-                sh '''
-                  aws ecr get-login-password --region $AWS_REGION | docker login --username AWS --password-stdin $ECR_REGISTRY
-                  docker build -t $ECR_REPO_BACKEND:latest .
-                  docker tag $ECR_REPO_BACKEND:latest $ECR_REGISTRY/$ECR_REPO_BACKEND:latest
-                  docker push $ECR_REGISTRY/$ECR_REPO_BACKEND:latest
-                '''
-              }
-            }
+        container('jnlp') {
+          dir('backend') {
+            sh '''
+              docker build -t $ECR_REPO_BACKEND:latest .
+              docker tag $ECR_REPO_BACKEND:latest $ECR_REGISTRY/$ECR_REPO_BACKEND:latest
+              docker push $ECR_REGISTRY/$ECR_REPO_BACKEND:latest
+            '''
           }
         }
       }
@@ -101,7 +104,7 @@ pipeline {
   
   post {
     always {
-      container('docker') {
+      container('jnlp') {
         sh '''
           docker rmi $ECR_REGISTRY/$ECR_REPO_FRONTEND:latest || true
           docker rmi $ECR_REGISTRY/$ECR_REPO_BACKEND:latest || true
